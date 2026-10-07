@@ -9,7 +9,7 @@
 ![States](https://img.shields.io/badge/States-7-1F3864?style=for-the-badge)
 ![Split](https://img.shields.io/badge/Split-subject--disjoint-2E5FD9?style=for-the-badge)
 ![CLI commands](https://img.shields.io/badge/CLI_commands-7-6E86E8?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-27_passing-3DA35B?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-26_passing-3DA35B?style=for-the-badge)
 ![Offline demo](https://img.shields.io/badge/Offline_demo-Yes-F5C542?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-A0399B?style=for-the-badge)
 
@@ -111,7 +111,7 @@ engagecam gives each of these questions its own component. Each component has te
 | Models | `pca_logreg`, `hog_logreg`, `hog_mlp` (core), `tiny_cnn`, `efficientnet_b0` (extra `torch`) |
 | Offline mode | All baselines, the demo and the core tests. No download, no GPU |
 | Safety | Subject- and clip-disjoint splits, train-only fitting, one preprocessing function, a consent notice in each CLI output |
-| Tests | **27** pass with torch. In CI, **26** pass and **1** skips |
+| Tests | **27** unit tests (`pytest`). CI installs only `.[dev]`: **26** pass and **1** skips (`torch` extra). With the `torch` extra: 27 pass |
 
 ```mermaid
 flowchart LR
@@ -480,8 +480,8 @@ Planned milestones (not built):
 
 | Validation | Result | Command |
 |---|---|---|
-| Unit tests with torch (local) | **27 passed** | `pytest -q` |
-| Unit tests in a clean venv with `pip install -e ".[dev]"` (as in CI) | **26 passed, 1 skipped** (the torch test) | `pytest -q` |
+| Unit tests (CI installs only `.[dev]`) | **26 passed, 1 skipped** (the torch test) | `pytest -q` |
+| Unit tests with the `torch` extra | **27 passed** | `pytest -q` |
 
 **SYNTHETIC demo** (60 subjects, 240 clips, 1,440 frames, 3 seeds, mean balanced accuracy, chance = 0.143). State-source Cramér's V = 0.711.
 
