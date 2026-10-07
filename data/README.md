@@ -7,8 +7,8 @@ The source data sets show identifiable faces. Do not commit them, and do not com
 
 | Source | Where | Terms | Content |
 |---|---|---|---|
-| DAiSEE (Dataset for Affective States in E-Environments) | Request access on the official DAiSEE page (IIT Hyderabad) | Research use only, see its license | Videos of learners in online sessions. Each clip has levels 0-3 for boredom, engagement, confusion and frustration |
-| YawDD (Yawning Detection Dataset) | On request from the authors (IEEE DataPort, University of Ottawa) | Research use only, see its terms | Driver videos with normal, talking and yawning segments |
+| DAiSEE (Dataset for Affective States in E-Environments) | Request access on the official DAiSEE page | Research use only, see its license | Videos of learners in online sessions. Each clip has levels 0-3 for boredom, engagement, confusion and frustration |
+| YawDD (Yawning Detection Dataset) | On request from the YawDD authors (IEEE DataPort) | Research use only, see its terms | Driver videos with normal, talking and yawning segments |
 
 Use the data only for research, under the terms of each source, and with the consent rules of your organisation.
 
