@@ -72,6 +72,7 @@ This README is the **one location that explains all of engagecam**. It gives the
 4. 🔄 [The end-to-end workflow](#4-the-end-to-end-workflow)
    - 4.1 [Full flow](#41-full-flow)
    - 4.2 [The life cycle of one frame](#42-the-life-cycle-of-one-frame)
+   - 4.3 [Who does which step](#43-who-does-which-step)
 5. 🔵 [The states and the source rules](#5-the-states-and-the-source-rules)
 6. 🟢 [The manifest](#6-the-manifest)
 7. 🟣 [The subject-disjoint split](#7-the-subject-disjoint-split)
@@ -140,6 +141,48 @@ flowchart LR
 | Deep models | `src/engagecam/deep.py` | TinyCNN and EfficientNet-B0 training (torch) |
 | CLI | `src/engagecam/cli.py` | The `engagecam` command with 7 subcommands |
 
+The component map shows which module calls which module. An arrow points from the caller to the module that it uses. No CLI command calls `deep.py`. Call it from Python.
+
+```mermaid
+flowchart TB
+    CLI["cli.py<br/>synth, manifest, validate, split,<br/>train, infer, demo"]
+    subgraph DATA["Data layer"]
+        ST["states.py<br/>STATES, normalise_state,<br/>daisee_state, ENGAGEMENT_WEIGHTS"]
+        MAN["manifest.py<br/>build_manifest, validate_manifest,<br/>load_manifest"]
+        SPL["splits.py<br/>subject_split, frame_split,<br/>assert_disjoint"]
+        SYN["synthetic.py<br/>make_dataset, write_dataset"]
+    end
+    subgraph IMG["Image input"]
+        PRE["preprocess.py<br/>preprocess, InputSpec, load_rgb, from_bgr"]
+        FAC["faces.py<br/>CenterCropDetector, MediaPipeDetector"]
+        FEA["features.py<br/>FileSource, MemorySource, hog"]
+    end
+    subgraph EXP["Experiment"]
+        PIPE["pipeline.py<br/>compute_features, run"]
+        BAS["baselines.py<br/>build, oversample_train, full_proba"]
+        EVA["evaluate.py<br/>report, clip_level, by_source,<br/>source_probe, Cramér's V"]
+        ENG["engagement.py<br/>frame_index, session_summary"]
+    end
+    DEEP["deep.py, extra torch<br/>TinyCNN, EfficientNet-B0, train"]
+
+    CLI --> MAN
+    CLI --> SPL
+    CLI --> SYN
+    CLI --> PIPE
+    CLI --> EVA
+    MAN --> ST
+    PIPE --> SPL
+    PIPE --> FEA
+    PIPE --> BAS
+    PIPE --> EVA
+    PIPE --> ENG
+    FEA --> PRE
+    PRE --> FAC
+    ENG --> ST
+    DEEP --> PRE
+    DEEP --> EVA
+```
+
 ### 2.2 System context
 
 ```mermaid
@@ -181,6 +224,23 @@ engagecam/
 ### 3.2 Fit on the training split only
 PCA and the scalers are pipeline steps, so `fit` sees only training rows. Oversampling runs after the split, on training rows only. No step uses the validation or the test rows to fit.
 
+```mermaid
+flowchart LR
+    X[/"Features of all frames<br/>and the split column"/] --> TR["train rows"]
+    X --> VA["val rows"]
+    X --> TE["test rows"]
+    TR --> OS{"--oversample?"}
+    OS -- "yes" --> OV["oversample_train:<br/>copy training rows only"]
+    OS -- "no" --> FIT
+    OV --> FIT["Pipeline fit: StandardScaler,<br/>PCA for pca_logreg, classifier"]
+    FIT --> PV["full_proba on val:<br/>predict only"]
+    FIT --> PT["full_proba on test:<br/>predict only"]
+    VA --> PV
+    TE --> PT
+    PV --> RV[/"Validation report"/]
+    PT --> RT[/"Test reports: frames, clips,<br/>sources, samples"/]
+```
+
 ### 3.3 The test split is scored, and only once
 Each experiment reports the untouched test split, at frame level and at clip level. The sample predictions for a visual check come from the test split only.
 
@@ -215,23 +275,67 @@ Each experiment reports the untouched test split, at frame level and at clip lev
 ### 4.1 Full flow
 
 ```mermaid
-flowchart TB
-    V["Videos (DAiSEE, YawDD)"] --> FR["Frames + face crop"] --> MAN["manifest.csv"]
+flowchart TD
+    V[/"Videos (DAiSEE, YawDD)"/] --> FR["Frames saved outside engagecam<br/>in the manifest layout"]
+    FR --> SCAN["engagecam manifest: build_manifest"]
+    SYN["engagecam synth or demo:<br/>synthetic frames"] --> MAN
+    SCAN --> MAN[("manifest.csv")]
     MAN --> VAL{"validate_manifest"}
-    VAL -- "problems" --> ERR["error: list of problems"]
+    VAL -- "problems" --> ERR[/"error: list of problems"/]
     VAL -- "valid" --> SPL["subject_split (seed)"]
     SPL --> TR["train"]
     SPL --> VA["val"]
     SPL --> TE["test (untouched)"]
-    TR --> PRE["preprocess (shared)"] --> FEAT["pixels / HOG"] --> FIT["Pipeline fit (PCA, scaler, model)"]
-    FIT --> PV["val report"]
-    FIT --> PT["test report: frames"] --> CL["test report: clips"]
-    PT --> SRC["per-source results"]
-    FEAT --> PROBE["source probe"]
-    PT --> IDX["engagement index"]
+    MAN --> PRE["preprocess (shared): RGB, face crop,<br/>resize, scale"] --> FEAT["pixels / HOG"]
+    FEAT --> FIT["Pipeline fit on train rows (PCA, scaler, model)"]
+    TR --> FIT
+    FIT --> PV[/"val report"/]
+    VA --> PV
+    FIT --> PT[/"test report: frames"/] --> CL[/"test report: clips"/]
+    TE --> PT
+    PT --> SRC[/"per-source results"/]
+    FEAT --> PROBE[/"source probe"/]
+    PT --> IDX[/"engagement index"/]
+    PROBE --> HUMAN{{"HUMAN<br/>researcher checks the probe lift,<br/>Cramér's V and each source"}}
+    SRC --> HUMAN
+
+    classDef human fill:#fff3cd,stroke:#b8901f,color:#3d2f00,font-weight:bold
+    class HUMAN human
 ```
 
 ### 4.2 The life cycle of one frame
+
+```mermaid
+stateDiagram-v2
+    state "Image file or synthetic array" as Image
+    state "Manifest row" as Row
+    state "Rejected manifest" as Rejected
+    state "Assigned to a split" as Split
+    state "RGB array" as RGB
+    state "Preprocessed 64 x 64 gray" as Pre
+    state "Pixel and HOG features" as Feat
+    state "Training row" as Train
+    state "Scored row, val or test" as Scored
+    state "7 state probabilities" as Proba
+    state "Part of a clip mean" as Clip
+    state "Part of the engagement index" as Index
+    [*] --> Image
+    Image --> Row: build_manifest or make_dataset
+    Row --> Rejected: validate_manifest finds a problem
+    Row --> RGB: compute_features, FileSource or MemorySource
+    RGB --> Pre: preprocess, baseline spec
+    Pre --> Feat: pixels_and_hog
+    Feat --> Split: run calls subject_split
+    Split --> Train: split is train
+    Split --> Scored: split is val or test
+    Train --> [*]: used by fit only
+    Scored --> Proba: full_proba
+    Proba --> Clip: clip_level, test only
+    Proba --> Index: session_summary, test only
+    Rejected --> [*]
+    Clip --> [*]
+    Index --> [*]
+```
 
 1. The manifest gives the path, the subject, the clip, the source and the state of the frame.
 2. The split puts the subject of the frame in `train`, `val` or `test`.
@@ -241,11 +345,62 @@ flowchart TB
 6. The clip report averages the probabilities of all frames of the clip.
 7. The engagement index multiplies the probabilities by the state weights.
 
+### 4.3 Who does which step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor R as Researcher
+    participant CLI as engagecam CLI
+    participant MAN as manifest.py
+    participant PIPE as pipeline.py
+    participant FEA as features and preprocess
+    participant SPL as splits.py
+    participant BAS as baselines.py
+    participant EVA as evaluate and engagement
+    participant FS as runs/ folder
+
+    R->>CLI: engagecam train manifest.csv --model hog_logreg --seeds 0,1,2
+    CLI->>MAN: load_manifest, validate_manifest
+    MAN-->>CLI: clean manifest
+    CLI->>PIPE: compute_features(manifest, FileSource)
+    PIPE->>FEA: pixels_and_hog with the baseline spec
+    FEA-->>PIPE: gray pixels and HOG for each frame
+    loop For each seed
+        CLI->>PIPE: run(manifest, features, model, split_mode, seed)
+        PIPE->>SPL: subject_split, then assert_disjoint
+        SPL-->>PIPE: train, val and test rows
+        PIPE->>BAS: build, fit on train rows only
+        PIPE->>BAS: full_proba on val and test
+        PIPE->>EVA: report, clip_level, by_source, source_probe, session_summary
+        EVA-->>PIPE: metrics and engagement summary
+        PIPE-->>CLI: Result with 8 test samples
+    end
+    CLI->>FS: model_split_seedk.json for each seed
+    CLI-->>R: one summary line for each seed and the consent notice
+```
+
 ---
 
 ## 5. The states and the source rules
 
 **Purpose.** Give one state order and one written rule for each source.
+
+```mermaid
+flowchart TD
+    IN[/"DAiSEE levels: boredom, engagement,<br/>confusion, frustration"/] --> CHK{"boredom, confusion or<br/>frustration outside 0 to 3?"}
+    CHK -- "yes" --> VE[/"ValueError"/]
+    CHK -- "no" --> BEST["Strongest of boredom, confusion,<br/>frustration, ties in that order"]
+    BEST --> L2{"Its level 2 or more?"}
+    L2 -- "yes" --> NEG[/"boredom, confusion<br/>or frustration"/]
+    L2 -- "no" --> EN{"engagement level<br/>2 or more?"}
+    EN -- "yes" --> ENG[/"engagement"/]
+    EN -- "no" --> ACT[/"active"/]
+    Y[/"YawDD segment or any label"/] --> NS["normalise_state: strip, lower case,<br/>ALIASES, for example yawning to yawn"]
+    NS --> K{"In STATES?"}
+    K -- "yes" --> S[/"One of the 7 states"/]
+    K -- "no" --> US[/"UnknownState"/]
+```
 
 | Index | State | Engagement weight |
 |---|---|---|
@@ -265,13 +420,34 @@ flowchart TB
 **Rules**
 
 - Aliases such as `engaged`, `yawning` and `asleep` change to the state names. An unknown name raises `UnknownState`.
-- A DAiSEE level outside 0–3 raises `ValueError`.
+- A boredom, confusion or frustration level outside 0–3 raises `ValueError`. The code does not check the engagement level.
 
 ---
 
 ## 6. The manifest
 
 **Purpose.** Give one data layout for all steps.
+
+```mermaid
+flowchart TD
+    ROOT[/"root folder"/] --> GLOB["Scan root/source/state/*,<br/>keep .jpg, .jpeg, .png"]
+    GLOB --> NM{"Name is<br/>subject__clip__frame?"}
+    NM -- "no" --> BAD["Count the bad name"]
+    NM -- "yes" --> ROW["Row: path, subject_id, clip_id,<br/>source from folder, state from folder, frame"]
+    BAD --> ANYBAD{"Any bad name?"}
+    ROW --> ANYBAD
+    ANYBAD -- "yes" --> ME1[/"ManifestError"/]
+    ANYBAD -- "no" --> NONE{"No image found?"}
+    NONE -- "yes" --> ME1
+    NONE -- "no" --> VAL["validate_manifest"]
+    CSV[/"manifest.csv<br/>load_manifest"/] --> VAL
+    VAL --> COLS{"All 6 columns?"}
+    COLS -- "no" --> ME2[/"ManifestError"/]
+    COLS -- "yes" --> CHECKS["Collect problems: missing values,<br/>unknown states, duplicate paths,<br/>clip with two subjects"]
+    CHECKS --> P{"Any problem?"}
+    P -- "yes" --> ME2
+    P -- "no" --> OUT[/"Clean manifest,<br/>normalised states"/]
+```
 
 **Procedure**
 
@@ -286,21 +462,61 @@ flowchart TB
 
 **Purpose.** Measure the model on persons that it did not see.
 
+```mermaid
+flowchart TD
+    IN[/"Manifest, test_fraction 0.2,<br/>val_fraction 0.15, seed"/] --> FR{"Fractions from<br/>0.05 to 0.4?"}
+    FR -- "no" --> VE[/"ValueError"/]
+    FR -- "yes" --> T["take: StratifiedGroupKFold,<br/>k = round of 1 / 0.2 = 5,<br/>groups subject_id, strata state"]
+    T --> TEST["First held-out fold = test"]
+    TEST --> REST["Rest of the rows"]
+    REST --> V["take: k = round of 1 / 0.1875 = 5,<br/>seed + 1"]
+    V --> VAL["First held-out fold = val"]
+    VAL --> TRAIN["Other rows = train"]
+    TRAIN --> AD{"assert_disjoint: a subject_id<br/>or clip_id in two splits?"}
+    AD -- "yes" --> SLE[/"SplitLeakError"/]
+    AD -- "no" --> OUT[/"Manifest with a split column"/]
+```
+
 **Procedure**
 
 1. Take the test part (20 %) with `StratifiedGroupKFold` by `subject_id`, stratified by state.
-2. Take the validation part (15 % of all frames) from the rest in the same way.
+2. Take the validation part from the rest in the same way. The fold count is round(1 / (0.15 / 0.8)) = 5, so the part is about 16 % of all frames, not exactly 15 %.
 3. Check that no subject and no clip is in two parts.
 
 **Rules**
 
-- `frame_split` exists only to measure the leakage. The CLI uses it only with `train --split-mode frame`.
+- `frame_split` exists only to measure the leakage. The CLI uses it only with `train --split-mode frame` and in `demo`.
 
 ---
 
 ## 8. Face crop and preprocessing
 
 **Purpose.** Give each model the same input at training and at inference.
+
+```mermaid
+flowchart TD
+    F[/"Image file"/] --> LR["load_rgb: Pillow, convert RGB"]
+    B[/"OpenCV BGR array"/] --> FB["from_bgr: reverse the channels"]
+    LR --> CHK{"uint8 H x W x 3?"}
+    FB --> CHK
+    CHK -- "no" --> VE[/"ValueError"/]
+    CHK -- "yes" --> DET{"detector"}
+    DET -- "default" --> CC["CenterCropDetector:<br/>square, 80 % of the short side"]
+    DET -- "MediaPipeDetector" --> MP{"Face found?"}
+    MP -- "yes" --> BOX["Box + 25 % margin"]
+    MP -- "no" --> CC
+    CC --> RS["Resize to spec size, bilinear"]
+    BOX --> RS
+    RS --> G{"spec.gray?"}
+    G -- "yes" --> GR[/"Gray H x W, 0 to 1"/]
+    G -- "no" --> SC{"spec.scaling"}
+    SC -- "unit" --> U["/ 255"]
+    SC -- "imagenet" --> IM["/ 255, minus mean, / std"]
+    SC -- "raw255" --> RAW["0 to 255"]
+    U --> CF[/"3 x H x W, channel first"/]
+    IM --> CF
+    RAW --> CF
+```
 
 | Input spec | Size | Scaling | Channels |
 |---|---|---|---|
@@ -322,6 +538,25 @@ flowchart TB
 
 **Purpose.** Give honest, fast reference models.
 
+```mermaid
+flowchart LR
+    F[/"Features: gray pixels 4,096<br/>and HOG 576"/] --> FM{"for_model"}
+    FM -- "pca_logreg" --> PIX["Gray pixels"]
+    FM -- "hog_logreg, hog_mlp" --> HOG["HOG"]
+    PIX --> OS{"--oversample?"}
+    HOG --> OS
+    OS -- "yes" --> OV["oversample_train: copy rows of<br/>rare states to the majority count"]
+    OS -- "no" --> B
+    OV --> B{"build(name)"}
+    B -- "pca_logreg" --> P1["StandardScaler, PCA 64,<br/>LogisticRegression balanced"]
+    B -- "hog_logreg" --> P2["StandardScaler,<br/>LogisticRegression C 0.5 balanced"]
+    B -- "hog_mlp" --> P3["StandardScaler,<br/>MLPClassifier 128, early stopping"]
+    P1 --> FP["full_proba: put predict_proba<br/>in 7 state columns"]
+    P2 --> FP
+    P3 --> FP
+    FP --> OUT[/"P: n x 7"/]
+```
+
 | Name | Features | Pipeline |
 |---|---|---|
 | `pca_logreg` | Gray pixels (4,096 values) | `StandardScaler` → `PCA(64)` → `LogisticRegression(class_weight="balanced")` |
@@ -339,6 +574,25 @@ flowchart TB
 
 **Purpose.** Give CNN models with the correct input (`pip install engagecam[torch]`).
 
+```mermaid
+flowchart TD
+    SP[/"Split manifest and image source"/] --> DS["FrameDataset for train, val, test:<br/>preprocess with spec_for(model)"]
+    DS --> BM{"build_model"}
+    BM -- "tiny_cnn" --> TC["TinyCNN, random init"]
+    BM -- "efficientnet_b0" --> EF["torchvision EfficientNet-B0,<br/>IMAGENET1K_V1, new 7-class head"]
+    TC --> LOSS["CrossEntropyLoss with class weights<br/>from the train split, AdamW"]
+    EF --> LOSS
+    LOSS --> EP["One epoch on train,<br/>seeded horizontal flip"]
+    EP --> VS["Balanced accuracy on val"]
+    VS --> BEST{"Better than the best?"}
+    BEST -- "yes" --> SAVE[("runs/model/seedk/best.pt")]
+    BEST -- "no" --> MORE
+    SAVE --> MORE{"More epochs?"}
+    MORE -- "yes" --> EP
+    MORE -- "no" --> LOAD["Load best.pt"]
+    LOAD --> TEST[/"history, best_val,<br/>test report"/]
+```
+
 **Procedure**
 
 1. `FrameDataset` calls `preprocess` with the input spec of the model. Training frames get a seeded horizontal flip.
@@ -354,6 +608,25 @@ flowchart TB
 ---
 
 ## 11. Evaluation, clips and the source probe
+
+```mermaid
+flowchart LR
+    PV[/"P on val, y val"/] --> RV["report"]
+    PT[/"P on test, y test,<br/>test frames"/] --> RT["report: balanced accuracy, macro F1,<br/>per state, kappa, log-loss, ECE, AUC"]
+    PT --> CL["clip_level: mean P<br/>for each clip_id"]
+    CL --> RC["report on clips"]
+    PT --> BS["by_source: balanced accuracy<br/>for each source"]
+    XT[/"Features and source of<br/>train and test rows"/] --> PR["source_probe: scaler + logistic<br/>regression fit on train sources"]
+    PR --> LIFT["Lift = probe accuracy on test<br/>minus majority rate"]
+    PT --> SM["8 random test samples"]
+    MAN[/"Manifest"/] --> CV["state_source_association:<br/>Cramér's V, validate and demo"]
+    RV --> RES[/"Result: val, test, test_clip,<br/>test_by_source, source_probe,<br/>engagement, samples"/]
+    RT --> RES
+    RC --> RES
+    BS --> RES
+    LIFT --> RES
+    SM --> RES
+```
 
 | Metric | Level | Note |
 |---|---|---|
@@ -376,11 +649,30 @@ flowchart TB
 
 **Purpose.** Give an aggregate signal for a session.
 
+```mermaid
+flowchart LR
+    P[/"P: n frames x 7 states"/] --> SH{"Shape n x 7?"}
+    SH -- "no" --> VE[/"ValueError"/]
+    SH -- "yes" --> FI["frame_index: P @ WEIGHTS,<br/>0 to 1"]
+    W[("ENGAGEMENT_WEIGHTS<br/>engagement 1.0 ... sleep 0.0")] --> FI
+    FI --> SMO["smoothed: exponential<br/>moving average, alpha 0.3"]
+    FI --> MEAN["mean_index"]
+    SMO --> FIN["final_smoothed"]
+    SMO --> LOW["share_low: smoothed<br/>values below 0.4"]
+    MEAN --> OUT[/"session_summary"/]
+    FIN --> OUT
+    LOW --> OUT
+    OUT --> HUMAN{{"HUMAN<br/>read for a group or a session,<br/>never for one person"}}
+
+    classDef human fill:#fff3cd,stroke:#b8901f,color:#3d2f00,font-weight:bold
+    class HUMAN human
+```
+
 **Procedure**
 
 1. For each frame, calculate the sum of P(state) × weight (section 5). The result is from 0 to 1.
 2. Smooth the frame values with an exponential moving average (alpha 0.3).
-3. Report the mean index, the last smoothed value and the share of frames below 0.4.
+3. Report the mean index, the last smoothed value and the share of smoothed values below 0.4.
 
 **Rules**
 
@@ -444,6 +736,25 @@ engagecam validate data/manifest.csv
 engagecam split data/manifest.csv --out data/split.csv
 engagecam train data/manifest.csv --model hog_logreg --oversample --seeds 0,1,2
 engagecam infer data/manifest.csv path/to/frame.jpg
+```
+
+The diagram shows the order of the commands and the files that connect them.
+
+```mermaid
+flowchart LR
+    INS["pip install -e .[dev]"] --> DEMO["engagecam demo<br/>in memory, writes no files"]
+    INS --> SYN["engagecam synth"]
+    FR[("data/frames<br/>source/state/subject__clip__frame.jpg")] --> MANC["engagecam manifest"]
+    SYN --> MAN[("manifest.csv")]
+    MANC --> MAN
+    MAN --> VAL["engagecam validate"]
+    MAN --> SPL["engagecam split"]
+    SPL --> SCSV[("data/split.csv")]
+    MAN --> TRN["engagecam train"]
+    TRN --> RUNS[("runs/model_split_seedk.json")]
+    MAN --> INF["engagecam infer<br/>fits hog_logreg on the train split"]
+    IMG[/"New frame images"/] --> INF
+    INF --> OUT[/"Top 3 states and<br/>engagement index"/]
 ```
 
 ### 14.4 Environment variables
@@ -513,7 +824,7 @@ Read these problems before you use engagecam results.
 | 4 | Source confound | In the earlier data, `yawn` and `sleep` came mostly from the driver videos | Read Cramér's V and the source probe for each run |
 | 5 | `sleep` | No public source in the list gives `sleep` clips | Add a source with eyes-closed clips, or drop the state |
 | 6 | DAiSEE rule | The rule from four levels to one state is a design choice | Change `daisee_state` and report the rule with the results |
-| 7 | Face crop | The default is a centre crop, not a detector | Install the `faces` extra for real frames |
+| 7 | Face crop | The default is a centre crop, not a detector. No CLI command uses `MediaPipeDetector` | Install the `faces` extra and pass `MediaPipeDetector()` to `preprocess` for real frames |
 | 8 | Fairness | No skin-tone or age slices are measured | Planned (M5). Collect consent-based annotations first |
 | 9 | Deep models | `tiny_cnn` is unstable on small data. EfficientNet-B0 was not run here | Use pretrained weights and more subjects |
 | 10 | CI | CI does not run the torch test | Run `pytest` with the `torch` extra before a release |
